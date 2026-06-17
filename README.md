@@ -1,168 +1,161 @@
 # sd-webui-CFGZeroStar
 
-**CFG-Zero\*** for Forge-derived WebUIs — both the *optimized-scale* term and
-*zero-init*, in a single post-CFG hook.
+**EN** | [日本語](#日本語)
 
-A port of the ComfyUI built-in [`CFGZeroStar`](https://github.com/comfyanonymous/ComfyUI)
-node (optimized scale) and the KJNodes `CFGZeroStarAndInit` behaviour
-(zero-init), based on the paper
-[**CFG-Zero\*: Improved Classifier-Free Guidance for Flow Matching Models**](https://arxiv.org/abs/2503.18886)
-(Fan et al., 2025).
+Post-CFG guidance extension for Stable Diffusion WebUI (Forge-based).  
+Rescales the unconditional branch by the least-squares optimal factor α (optimized scale), and optionally zeroes the model prediction for the first few steps (zero-init).  
+Operates in x0 (denoised) space — prediction-space agnostic, so it works on both SDXL (UNet/epsilon) and flow-matching (Anima) models.
 
----
+Paper: [arXiv:2503.18886](https://arxiv.org/abs/2503.18886)  
+Original: [WeichenFan/CFG-Zero-star](https://github.com/WeichenFan/CFG-Zero-star) / ComfyUI built-in `CFGZeroStar` node
 
-## What it does
-
-CFG-Zero\* has two parts; this extension implements both.
-
-**1. Optimized scale.** A per-sample scalar `s*` — the least-squares optimal
-scale of the unconditional prediction relative to the conditional one — is
-applied to the unconditional branch:
-
-```
-s*       = <v_cond, v_uncond> / (||v_uncond||^2 + 1e-8)
-denoised = s* * uncond + cfg_scale * (cond - s* * uncond)
-```
-
-with `v_cond = x - cond_denoised`, `v_uncond = x - uncond_denoised` (x0-space
-prediction gaps). This corrects inaccuracies in the estimated velocity/score.
-
-**2. Zero-init.** The model prediction is zeroed for the first few steps (the
-paper's default is ~4% of total), where the flow/score estimate is least
-reliable. In x0/denoised space the hook returns `0` for those steps; the
-k-diffusion sampler then steps `x_next = x * (sigma_next / sigma)`, so the latent
-rescales to track sigma (the early prediction is skipped while x stays
-magnitude-consistent with the noise level). The "first N steps" are located from
-the sampler's sigma schedule (no step counting), which keeps it correct under
-multi-stage solvers (RK) and the hires.fix second pass.
-
-### Architecture-agnostic by construction
-
-Both parts run in **x0 (denoised) space** in a **post-CFG** hook. By the time
-the hook fires, the model output (epsilon / velocity / flow-matching) has been
-converted to an x0 estimate, so the behaviour does not depend on the model's
-prediction space. Verified to take effect on SDXL-class UNet models (Illustrious
-etc.) as well as flow-matching DiT models (Anima).
+> Recommended CFG: 7–10. Stacking multiple CFG-axis extensions at very high CFG (≈20+) can cause error accumulation.
 
 ---
 
-## Install
+## Installation
 
-WebUI → **Extensions** → **Install from URL**, paste
-`https://github.com/seti9585/sd-webui-CFGZeroStar`, **Apply and restart UI**. Or
-from your WebUI root:
-
-```bash
-cd extensions
-git clone https://github.com/seti9585/sd-webui-CFGZeroStar
-```
-
-Or extract the release `.zip` into `extensions/` so that
-`extensions/sd-webui-CFGZeroStar/` exists, and restart. No extra dependencies.
-
-## Compatibility
-
-| Backend                      | Status |
-|------------------------------|:------:|
-| reForge                      |   ✅   |
-| Forge Classic                |   ✅   |
-| Forge (original, lllyasviel) |   ✅   |
-| Forge Neo                    |   ✅   |
-| A1111 (AUTOMATIC1111)        |   ❌   |
-
-A1111 lacks the Forge backend's `set_model_sampler_post_cfg_function`. Verified
-on SDXL (UNet) and Anima (flow-matching DiT) under Forge Neo, and on SDXL under
-reForge.
-
-## Usage
-
-Open the **CFG-Zero\*** panel (txt2img / img2img):
-
-- **Enable CFG-Zero\*** — turns on the optimized-scale correction.
-- **Enable zero-init** — additionally zeroes the first few ODE steps.
-- **Zero-init steps (0 = auto 4%)** — leading steps to zero; `0` resolves to
-  ~4% of the total step count automatically.
-
-When zero-init is active, the effective step count is written to the image
-metadata as `cfgzero_zero_init_steps` for reproducibility. XYZ Grid axes are
-registered for **Enabled**, **Zero-init**, and **Zero-init steps** so you can do
-same-seed comparison grids directly.
-
-**Recommended CFG:** ~7–10. As with the other CFG-axis extensions in this family
-(TCFG / FreSca / MaHiRo / SkimmedCFG), stacking many post-CFG corrections at very
-high CFG (≈20+) can let numerical error accumulate.
-
-**Note on zero-init:** it locates the first N steps from the sampler's sigma
-schedule when the backend exposes it (`model_options.transformer_options`).
-Neither reForge nor Forge Neo currently exposes it in post-CFG, so on those
-backends zero-init automatically uses an approximate log-sigma fraction fallback
-(verified to reproduce the exact step boundary for small N on AYS schedules). A
-one-time log line reports which mode is used (`mode=schedule` / `mode=fallback`).
-
-**zero-init is not a quality feature here.** Dose tests (same seed, N = 0/1/2/4/8)
-on both an SDXL/UNet model and a flow-matching (Anima) model, run through the
-sampler's sigma/ODE interface, show that zero-init re-rolls early composition and
-*reduces* contrast/saturation at higher N — with no quality gain on either
-architecture. The paper's benefit is tied to native flow-matching pipelines,
-which Forge's unified σ samplers do not reproduce. Keep it low (the 4% auto
-default ≈ 1 step at 32 steps); treat it as a composition-variation knob, not an
-enhancement. The optimized-scale term is the validated, useful part of this
-extension.
-
-## How it composes with other extensions
-
-Registered via `set_model_sampler_post_cfg_function`. The optimized-scale
-correction uses an **additive** (`out + delta`) form, so it stacks on top of
-earlier post-CFG hooks (FreSca, MaHiRo, TCFG) rather than discarding them.
-
-> **Forge Neo ordering:** post-CFG hooks run in registration order, not by
-> `sorting_priority`. The additive form keeps this hook order-robust; if you
-> need a strict order, control it via extension load order.
-
-## Layout
+**Extensions → Install from URL:**
 
 ```
-sd-webui-CFGZeroStar/
-├── scripts/
-│   └── sd_webui_cfgzero.py     # Gradio UI + hook registration
-└── sd_webui_cfgzero/
-    ├── __init__.py             # public surface re-export
-    └── core.py                 # optimized_scale + zero-init + apply/remove
+https://github.com/seti9585/sd-webui-CFGZeroStar
 ```
-
-## Debugging
-
-Run the WebUI with the env var `CFGZERO_DEBUG=1` (or set `CFGZERO_DEBUG = True`
-in `core.py`) to log, once per process: the post-CFG arg keys, the
-`transformer_options` keys, the (sigma-throttled) alpha trajectory, and the
-resolved zero-init threshold. Useful for confirming the faithful noise-space
-path and whether the sigma schedule is available for zero-init.
 
 ---
 
-## Credits & licensing
+## Parameters
 
-- **Algorithm / original code:** [WeichenFan/CFG-Zero-star](https://github.com/WeichenFan/CFG-Zero-star),
-  licensed **Apache-2.0**. `optimized_scale` and the zero-init concept are
-  reimplementations of that work.
-- **Port references:** the ComfyUI built-in `CFGZeroStar` node
-  (`comfy_extras/nodes_cfg.py`) for the optimized-scale post-CFG adaptation, and
-  KJNodes `CFGZeroStarAndInit` for the zero-init behaviour.
-- This extension's own code is released under the **MIT License** (see
-  `LICENSE`). The upstream method is Apache-2.0 (permissive, MIT-compatible);
-  redistribution under MIT with the attribution above is fine, but confirm you
-  are comfortable with it before publishing. *(General note, not legal advice.)*
+| Parameter | Default | Description |
+|---|---|---|
+| Enable CFG-Zero* | off | Enable the optimized-scale correction |
+| Enable zero-init | off | Zero the model prediction for the first N steps |
+| Zero-init steps | 0 | Steps to zero. `0` = auto (~4% of total steps) |
 
-### Citation
+---
 
-```bibtex
-@misc{fan2025cfgzerostar,
-  title         = {CFG-Zero*: Improved Classifier-Free Guidance for Flow Matching Models},
-  author        = {Weichen Fan and Amber Yijia Zheng and Raymond A. Yeh and Ziwei Liu},
-  year          = {2025},
-  eprint        = {2503.18886},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.CV},
-  url           = {https://arxiv.org/abs/2503.18886}
-}
+## Algorithm
+
+### Optimized scale
+
 ```
+v_cond   = x_t − cond_denoised
+v_uncond = x_t − uncond_denoised
+α        = <v_cond, v_uncond> / (‖v_uncond‖² + 1e-8)   ← per-sample scalar
+output   = out + uncond_denoised × (α − 1)
+               + cond_scale × uncond_denoised × (1 − α)
+```
+
+`out` is the standard CFG result. The additive form (`out + delta`) preserves any earlier post-CFG corrections (FreSca, MaHiRo, TCFG).
+
+α is computed in x0 space — the sampler wrapper converts the raw model output (epsilon / velocity / flow-matching) to an x0 estimate before the post-CFG hook fires, so α does not depend on the model's prediction parameterization.
+
+Measured behaviour (reForge / Illustrious / CFG 7 / RK Sampler): α ≈ 0.999 at the first step, drifting to ≈ 0.964 at the low-σ tail. The correction is largest at the late (low-σ) steps that govern tone and contrast, leaving composition intact.
+
+### Zero-init
+
+```
+if σ > σ_schedule[N]:
+    denoised = 0   →   x_next = x × (σ_next / σ)
+```
+
+Zeroing the model prediction causes the latent to rescale to track σ, skipping the early unreliable estimate. "First N steps" is located from the sigma schedule when the backend exposes it; otherwise an approximate log-σ fraction fallback is used automatically.
+
+> **Note:** zero-init is validated on both SDXL and Anima through Forge's σ-based ODE sampler interface.  
+> It re-rolls early composition (larger N = more variation) but does **not** improve image quality on either architecture — contrast and saturation decrease at high N. Keep it at the auto default (≈ 1 step at 32 steps) and treat it as a composition-variation knob, not an enhancement.  
+> The paper's quality benefit is specific to native flow-matching pipelines and does not transfer to Forge's unified σ sampler.
+
+---
+
+## Tested environments
+
+- reForge (Python 3.10) — SDXL-family models
+- Forge Neo (Python 3.12) — SDXL-family and Anima (flow-matching DiT), txt2img + Hires.fix
+
+Not compatible with A1111 (`set_model_sampler_post_cfg_function` is Forge-backend only).
+
+---
+
+---
+
+# 日本語
+
+**[English](#sd-webui-cfgzerostar)** | 日本語
+
+Forge 系 WebUI 向け Post-CFG ガイダンス拡張機能。  
+無条件分岐を最小二乗最適スケール α（optimized scale）でリスケールし、オプションで最初の数ステップのモデル予測をゼロ化（zero-init）します。  
+x0（denoised）空間で動作するため、予測パラメータ化（epsilon / velocity / flow-matching）に依存せず、SDXL（UNet）と flow-matching（Anima）の両方で機能します。
+
+論文: [arXiv:2503.18886](https://arxiv.org/abs/2503.18886)  
+原実装: [WeichenFan/CFG-Zero-star](https://github.com/WeichenFan/CFG-Zero-star) / ComfyUI ビルトイン `CFGZeroStar` ノード
+
+> 推奨 CFG: 7〜10。CFG 軸の拡張機能を複数重ねて CFG を高くしすぎると（≈20+）、誤差が累積します。
+
+---
+
+## インストール
+
+**Extensions → Install from URL:**
+
+```
+https://github.com/seti9585/sd-webui-CFGZeroStar
+```
+
+---
+
+## パラメータ
+
+| パラメータ | 既定値 | 説明 |
+|---|---|---|
+| Enable CFG-Zero* | off | optimized-scale 補正を有効にする |
+| Enable zero-init | off | 最初の N ステップのモデル予測をゼロ化する |
+| Zero-init steps | 0 | ゼロ化するステップ数。`0` = 自動（総ステップ数の約 4%） |
+
+---
+
+## アルゴリズム
+
+### Optimized scale
+
+```
+v_cond   = x_t − cond_denoised
+v_uncond = x_t − uncond_denoised
+α        = <v_cond, v_uncond> / (‖v_uncond‖² + 1e-8)   ← サンプルごとのスカラー
+output   = out + uncond_denoised × (α − 1)
+               + cond_scale × uncond_denoised × (1 − α)
+```
+
+`out` は通常の CFG 結果です。加算形（`out + delta`）により、先行する Post-CFG フック（FreSca・MaHiRo・TCFG）の補正を上書きせず積み重ねます。
+
+α は x0 空間で計算されます。Post-CFG フックが呼ばれる時点で、サンプラーがモデルの生出力（epsilon / velocity / flow-matching）を x0 推定値に変換済みのため、α はモデルの予測パラメータ化に依存しません。
+
+実測挙動（reForge / Illustrious / CFG 7 / RK Sampler）: α は第0ステップで ≈ 0.999、低 σ 末尾で ≈ 0.964 まで下降します。補正は後半（低 σ）ステップ ── トーンとコントラストを決める領域 ── に集中し、構図はそのまま維持されます。
+
+### Zero-init
+
+```
+if σ > σ_schedule[N]:
+    denoised = 0   →   x_next = x × (σ_next / σ)
+```
+
+モデル予測をゼロ化することで、latent が σ に追従して縮み、初期の不安定な推定をスキップします。「最初の N ステップ」の判定はバックエンドが sigma スケジュールを公開している場合は厳密版、非公開の場合は自動的に log-σ 分率フォールバックを使用します。
+
+> **注意:** zero-init は SDXL・Anima の両アーキテクチャについて、Forge の σ ベース ODE サンプラーインターフェース上で検証済みです。  
+> N を大きくするほど初期構図が変化しますが、いずれのアーキテクチャでも画質は向上しません ── 高 N でコントラスト・彩度が低下します。自動（32ステップで ≈ 1ステップ）のまま使用し、品質機能ではなく構図バリエーションのノブとして扱ってください。  
+> 論文の品質上の利点はネイティブ flow-matching パイプライン固有のもので、Forge の統一 σ サンプラー上では再現されません。
+
+---
+
+## 動作確認環境
+
+- reForge（Python 3.10）— SDXL 系モデル
+- Forge Neo（Python 3.12）— SDXL 系および Anima（flow-matching DiT）、txt2img + Hires.fix
+
+A1111 非対応（`set_model_sampler_post_cfg_function` は Forge バックエンド専用）。
+
+---
+
+## ライセンス
+
+MIT License — Copyright (c) 2026 seti9585  
+Original: [WeichenFan/CFG-Zero-star](https://github.com/WeichenFan/CFG-Zero-star) (Apache-2.0) / ComfyUI built-in `CFGZeroStar` node  
+Based on: [arXiv:2503.18886](https://arxiv.org/abs/2503.18886)
