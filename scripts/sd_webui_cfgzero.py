@@ -121,18 +121,39 @@ class CFGZeroStarScript(scripts.Script):
                 "</p>"
             )
 
-        enabled.change(fn=lambda x: self._update_enabled(x), inputs=[enabled])
+        # Infotext round-trip (PNG Info -> Send to txt2img / img2img).
+        # Bindings:
+        #   - Enable: callable matching the existing "cfgzero" key (value
+        #     "enabled"); a missing key resolves to False, forcing OFF for
+        #     faithful same-seed reproduction.
+        #   - zero-init: there is no dedicated key. "cfgzero_zero_init_steps" is
+        #     written only when zero-init is on (and is always >= 1), so its
+        #     presence means zero-init ON, absence OFF.
+        #   - Zero-init steps: plain key. The recorded value is the RESOLVED step
+        #     count, so a UI value of 0 (auto) round-trips as the concrete number
+        #     it resolved to. This reproduces the same behaviour; the "auto"
+        #     intent is not preserved, which is acceptable.
+        #
+        # NOTE: no enabled.change() listener is registered. The previous version
+        # synced an instance flag via change(), but that value was always
+        # overwritten by the UI args read during sampling, so it was dead code.
+        self.infotext_fields = [
+            (enabled,    lambda d: d.get("cfgzero", "") == "enabled"),
+            (zero_init,  lambda d: "cfgzero_zero_init_steps" in d),
+            (zero_steps, "cfgzero_zero_init_steps"),
+        ]
+
         return [enabled, zero_init, zero_steps]
 
-    def _update_enabled(self, value: bool) -> None:
-        self.enabled = value
+    # ------------------------------------------------------------------
+    # Effective configuration (UI args + XYZ Grid override)
+    # ------------------------------------------------------------------
 
-    def process_before_every_sampling(self, p, *args, **kwargs):
+    def _resolve(self, p, args):
         enabled       = bool(args[0]) if len(args) >= 1 else False
         zero_init     = bool(args[1]) if len(args) >= 2 else False
         zero_steps_ui = int(args[2])  if len(args) >= 3 else 0
 
-        # XYZ Grid overrides
         xyz = getattr(p, "_cfgzero_xyz", {})
         if "enabled" in xyz:
             enabled = (xyz["enabled"] == "True")
@@ -143,6 +164,30 @@ class CFGZeroStarScript(scripts.Script):
                 zero_steps_ui = int(xyz["zero_steps"])
             except (TypeError, ValueError):
                 pass
+
+        return enabled, zero_init, zero_steps_ui
+
+    # ------------------------------------------------------------------
+    # Metadata write (runs once before sampling so create_infotext captures it)
+    # ------------------------------------------------------------------
+
+    def process(self, p, *args):
+        if len(args) < 1:
+            return
+        enabled, zero_init, zero_steps_ui = self._resolve(p, args)
+        if not enabled:
+            return
+        gen_params = {"cfgzero": "enabled"}
+        if zero_init:
+            gen_params["cfgzero_zero_init_steps"] = _resolve_zero_steps(p, zero_init, zero_steps_ui)
+        p.extra_generation_params.update(gen_params)
+
+    # ------------------------------------------------------------------
+    # Hook application (correct timing for forge_objects.unet)
+    # ------------------------------------------------------------------
+
+    def process_before_every_sampling(self, p, *args, **kwargs):
+        enabled, zero_init, zero_steps_ui = self._resolve(p, args)
 
         self.enabled = enabled
         if not enabled:
@@ -160,11 +205,6 @@ class CFGZeroStarScript(scripts.Script):
         apply_cfgzero(unet, zero_init=zero_init, zero_steps=zero_steps,
                       total_steps=total_steps)
         p.sd_model.forge_objects.unet = unet
-
-        gen_params = {"cfgzero": "enabled"}
-        if zero_init:
-            gen_params["cfgzero_zero_init_steps"] = zero_steps
-        p.extra_generation_params.update(gen_params)
         logger.debug("[CFG-Zero*] applied (zero_init=%s, zero_steps=%d)",
                      zero_init, zero_steps)
 
