@@ -64,7 +64,7 @@ Public surface
 --------------
     apply_cfgzero(unet, *, zero_init=False, zero_steps=0, total_steps=0)
     remove_cfgzero_patches(unet)
-    CFGZERO_HOOK_QUALNAME
+    MARKER
 """
 
 from __future__ import annotations
@@ -94,7 +94,12 @@ def _emit(fmt, *args):
         pass
 
 
-CFGZERO_HOOK_QUALNAME = "cfgzero_hook"
+# Marker attribute value used to identify this extension's own post-CFG hook
+# so it can be removed before re-registration (idempotency / fail-safe against
+# double-apply). Versioned string, following the same convention as
+# sd-webui-SkimmedCFG / sd-webui-TCFG / sd-webui-MaHiRo / sd-webui-DifferenceCFG
+# / sd-webui-FreSca.
+MARKER = "sd_webui_cfgzero_v1"
 
 CFGZERO_DEBUG = os.environ.get("CFGZERO_DEBUG", "0") not in ("0", "", "false", "False")
 
@@ -294,7 +299,7 @@ def _make_hook(zero_init: bool, zero_steps: int, total_steps: int):
                 _WARNED_HOOK_FAIL = True
             return out
 
-    cfgzero_hook.__qualname__ = CFGZERO_HOOK_QUALNAME
+    cfgzero_hook._sd_webui_cfgzero_marker = MARKER
     return cfgzero_hook
 
 
@@ -311,7 +316,7 @@ def remove_cfgzero_patches(unet) -> None:
     if not fns:
         return
     opts["sampler_post_cfg_function"] = [
-        fn for fn in fns if getattr(fn, "__qualname__", None) != CFGZERO_HOOK_QUALNAME
+        fn for fn in fns if getattr(fn, "_sd_webui_cfgzero_marker", None) != MARKER
     ]
 
 
