@@ -6,14 +6,14 @@ layer can ``from sd_webui_cfgzero import apply_cfgzero, remove_cfgzero_patches``
 """
 
 from sd_webui_cfgzero.core import (
-    CFGZERO_HOOK_QUALNAME,
+    MARKER,
     apply_cfgzero,
     optimized_scale,
     remove_cfgzero_patches,
 )
 
 __all__ = [
-    "CFGZERO_HOOK_QUALNAME",
+    "MARKER",
     "apply_cfgzero",
     "optimized_scale",
     "remove_cfgzero_patches",
