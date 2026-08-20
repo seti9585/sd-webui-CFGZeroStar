@@ -1,5 +1,5 @@
 """
-sd-webui-CFGZeroStar — CFG-Zero* for Forge-derived WebUIs
+sd-webui-CFGZeroStar - CFG-Zero* for Forge-derived WebUIs
 ========================================================
 Location: extensions/sd-webui-CFGZeroStar/scripts/sd_webui_cfgzero.py
 
@@ -7,19 +7,25 @@ Paper : arXiv:2503.18886
 Port  : ComfyUI built-in ``CFGZeroStar`` (optimized scale) + KJNodes
         ``CFGZeroStarAndInit`` (zero-init), as one post-CFG hook.
 
-Hook  : set_model_sampler_post_cfg_function   (pure post-CFG, x0 space)
+Hook  : sampler_post_cfg_function, registered by priority-ordered insertion
+        (pure post-CFG, x0 space)
 
 Compatibility:
     OK   reForge / Forge Classic / Forge (lllyasviel) / Forge Neo
-    NO   A1111 — no Forge backend
+    NO   A1111 - no Forge backend
 
-UI (kept deliberately minimal — WebUI's value is "tick and go"):
-    * Enable CFG-Zero*          — optimized-scale correction
-    * Enable zero-init          — zero the first few ODE steps
-    * Zero-init steps (0 = auto) — auto resolves to ~4% of total steps
+UI (kept deliberately minimal - WebUI's value is "tick and go"):
+    * Enable CFG-Zero*          - optimized-scale correction
+    * Enable zero-init          - zero the first few ODE steps
+    * Zero-init steps (0 = auto) - auto resolves to ~4% of total steps
 
-Ordering note (Forge Neo): post-CFG hooks run in registration order, not by
-sorting_priority. The additive form makes this hook order-robust.
+Ordering note: on every Forge-derived backend, post-CFG hooks run in the
+order they appear in model_options["sampler_post_cfg_function"], and plain
+appends land in script LOAD order (alphabetical by extension directory), not
+in sorting_priority order. Since v1.1 the core inserts by priority instead,
+so 15.0 puts CFG-Zero* first among the suite's post-CFG hooks. The
+optimized-scale term is additive and order-robust regardless; zero-init is
+not - see sd_webui_cfgzero/core.py for the interaction with later hooks.
 """
 
 import logging
@@ -33,7 +39,7 @@ import gradio as gr
 from modules import scripts, script_callbacks
 
 # --------------------------------------------------------------------------- #
-# sys.path — ensure the extension root is importable
+# sys.path - ensure the extension root is importable
 # --------------------------------------------------------------------------- #
 _EXT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _EXT_ROOT not in sys.path:
@@ -81,7 +87,7 @@ def _resolve_zero_steps(p, zero_init: bool, zero_steps_ui: int) -> int:
 # --------------------------------------------------------------------------- #
 
 class CFGZeroStarScript(scripts.Script):
-    """CFG-Zero* — optimized scale (+ optional zero-init)."""
+    """CFG-Zero* - optimized scale (+ optional zero-init)."""
 
     sorting_priority = 15.0
 
@@ -101,7 +107,7 @@ class CFGZeroStarScript(scripts.Script):
                 "<b>Post-CFG</b>: CFG-Zero*. Rescales the unconditional branch "
                 "by the least-squares optimal factor s* (optimized scale), and "
                 "optionally zeroes the first few ODE steps (zero-init). Operates "
-                "in x0 space — prediction-space agnostic, so it works on SDXL "
+                "in x0 space - prediction-space agnostic, so it works on SDXL "
                 "and flow-matching (Anima) models alike. Requires Forge backend."
                 "</i></p>"
             )
